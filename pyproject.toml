@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-openrecall-provider"
+version = "0.3.0"
+description = "Zero-knowledge encrypted memory provider for Hermes Agent — AES-256-GCM client-side, server only ever sees ciphertext."
+readme = "openrecall_provider/README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Reverb", email = "129622142+reverb256@users.noreply.github.com" },
+]
+keywords = ["hermes", "hermes-agent", "openrecall", "memory", "memory-provider", "encrypted", "e2ee"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "cryptography>=41.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/reverb256/hermes-openrecall-provider"
+Source = "https://github.com/reverb256/hermes-openrecall-provider"
+"Bug Tracker" = "https://github.com/reverb256/hermes-openrecall-provider/issues"
+Upstream = "https://github.com/Twigpine/openrecall"
+
+# ---------------------------------------------------------------------------
+# Hermes memory provider entry point
+# ---------------------------------------------------------------------------
+# Hermes discovers pip-installed memory providers via the
+# ``hermes_agent.memory_providers`` entry-point group. The provider's
+# ``register()`` function receives a ``PluginContext``-like shim and
+# calls ``ctx.register_memory_provider(MemlawbMemoryProvider())``.
+# Reference: hermes-agent/plugins/memory/__init__.py (PR #82649).
+[project.entry-points."hermes_agent.memory_providers"]
+openrecall = "openrecall_provider:register"
+
+[tool.setuptools]
+packages = ["openrecall_provider"]
+
+[tool.setuptools.package-data]
+openrecall_provider = ["plugin.yaml", "README.md", "skills/*/SKILL.md"]

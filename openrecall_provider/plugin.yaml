@@ -1,0 +1,22 @@
+name: openrecall
+version: 0.3.0
+kind: exclusive
+description: "openrecall — zero-knowledge encrypted memory for Hermes Agent. AES-256-GCM client-side; the server only ever sees ciphertext."
+author: "Reverb <129622142+reverb256@users.noreply.github.com>"
+homepage: "https://github.com/reverb256/hermes-openrecall-provider"
+license: "MIT"
+pip_dependencies:
+  - cryptography>=41.0.0
+# Tools are exposed by the MemoryProvider ABC via handle_tool_call, not by
+# ctx.register_tool — so provides_tools is intentionally empty.
+provides_tools: []
+hooks:
+  - on_turn_start
+  - on_pre_compress
+  - on_memory_write
+  - on_session_end
+requires_env:
+  - OPENRECALL_PASSPHRASE
+config:
+  url: http://127.0.0.1:8080
+  namespace: user:default
