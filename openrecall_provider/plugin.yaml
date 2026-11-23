@@ -1,5 +1,5 @@
 name: openrecall
-version: 0.3.0
+version: 0.4.0
 kind: exclusive
 description: "openrecall — zero-knowledge encrypted memory for Hermes Agent. AES-256-GCM client-side; the server only ever sees ciphertext."
 author: "Reverb <129622142+reverb256@users.noreply.github.com>"
