@@ -269,9 +269,146 @@ class OpenRecallClient:
         return self._key_for(SALT_PREFIX)
 
     def rotate_passphrase(self, new_passphrase: str) -> None:
-        """Update the passphrase and invalidate the derived key cache."""
+        """Update the passphrase and invalidate the derived key cache.
+
+        NOTE: this only changes in-memory key derivation. It does NOT
+        re-encrypt stored entries. Use ``rekey_namespace`` for a real rotation.
+        """
         self._passphrase = new_passphrase
         self._keys.clear()
+
+    # -- Backup / restore / rekey --------------------------------------------
+
+    def export_backup(self) -> Dict[str, Any]:
+        """Export the namespace as ciphertext plus metadata. No plaintext.
+
+        The output is safe to store anywhere: the server already holds this
+        ciphertext, and the passphrase needed to decrypt it is NOT included.
+        Keep the passphrase backup separate (``backup_paths()`` covers it).
+        """
+        entries = self.get_namespace()
+        return {
+            "format": "openrecall-backup",
+            "version": 1,
+            "namespace": self.namespace,
+            "url": self.url,
+            "salt_prefix": SALT_PREFIX,
+            "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "entries": dict(entries),
+        }
+
+    def verify_entries(self) -> Dict[str, Any]:
+        """Decrypt every entry with any supported salt, report failures."""
+        entries = self.get_namespace()
+        failed: List[str] = []
+        salts: Dict[str, int] = {}
+        for key, b64 in entries.items():
+            try:
+                _pt, prefix = self.decrypt_any(key, b64)
+                salts[prefix] = salts.get(prefix, 0) + 1
+            except Exception as e:
+                logger.debug("verify failed for %s: %s", key, e)
+                failed.append(key)
+        return {
+            "namespace": self.namespace,
+            "total": len(entries),
+            "decrypted": len(entries) - len(failed),
+            "failed": len(failed),
+            "failed_keys": failed,
+            "salt_prefixes": salts,
+        }
+
+    def restore_backup(self, backup: Dict[str, Any], *, namespace: Optional[str] = None) -> Dict[str, Any]:
+        """Restore entries from an export, re-encrypting for the target namespace.
+
+        The KDF binds ciphertext to its namespace, so copying blobs verbatim
+        into a different namespace would produce undecryptable entries. When
+        the target differs, decrypt each entry under the source namespace key
+        and re-encrypt it under the target key. The passphrase is required for
+        a cross-namespace restore; a same-namespace restore needs no passphrase.
+        """
+        if backup.get("format") != "openrecall-backup":
+            raise OpenRecallError("not an openrecall backup file")
+        if backup.get("version") != 1:
+            raise OpenRecallError(f"unsupported backup version: {backup.get('version')!r}")
+        entries = backup.get("entries")
+        if not isinstance(entries, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in entries.items()
+        ):
+            raise OpenRecallError("backup entries must be a {key: ciphertext} map")
+        target = namespace or backup.get("namespace")
+        if not isinstance(target, str) or not target:
+            raise OpenRecallError("backup has no namespace; pass --dest-namespace")
+        source = backup.get("namespace")
+        original = self.namespace
+
+        if target == source:
+            self.put_entries(dict(entries))
+            return {"namespace": target, "restored": len(entries), "reencrypted": False}
+
+        # Cross-namespace: re-encrypt plaintext under the target namespace key.
+        source_client = OpenRecallClient(
+            url=self.url, namespace=str(source), passphrase=self._passphrase,
+            api_key=self.api_key,
+        )
+        target_key = _derive_key(self._passphrase, target, SALT_PREFIX)
+        restored: Dict[str, str] = {}
+        for key, b64 in entries.items():
+            plaintext, _prefix = source_client.decrypt_any(key, b64)
+            restored[key] = encrypt_entry(target_key, key, plaintext)
+        self.namespace = target
+        try:
+            self.put_entries(restored)
+        finally:
+            self.namespace = original
+        return {"namespace": target, "restored": len(restored), "reencrypted": True}
+
+    def rekey_namespace(self, new_passphrase: str, backup_path: str) -> Dict[str, Any]:
+        """Re-encrypt every entry under ``new_passphrase`` and upload atomically.
+
+        Writes a ciphertext backup to ``backup_path`` BEFORE uploading, verifies
+        that every old entry decrypts and that each re-encrypted blob decrypts
+        back to byte-identical plaintext, then does one delta PUT. Nothing is
+        uploaded if any entry fails. Returns a summary; the caller must persist
+        ``new_passphrase`` to the passphrase file after a successful return.
+        """
+        if not new_passphrase:
+            raise OpenRecallError("new passphrase must not be empty")
+        entries = self.get_namespace()
+        if not entries:
+            raise OpenRecallError("namespace is empty; nothing to rekey")
+
+        # 1. Backup raw ciphertext first — recoverable even if rekey fails midway.
+        backup = self.export_backup()
+        with open(backup_path, "w", encoding="utf-8") as f:
+            json.dump(backup, f, indent=2, sort_keys=True)
+        os.chmod(backup_path, 0o600)
+
+        # 2. Decrypt all with old passphrase, then re-encrypt under the new key.
+        old_key = self._get_key()
+        new_key = _derive_key(new_passphrase, self.namespace, SALT_PREFIX)
+        reencrypted: Dict[str, str] = {}
+        for key, b64 in entries.items():
+            plaintext, _prefix = self.decrypt_any(key, b64)
+            reencrypted[key] = encrypt_entry(new_key, key, plaintext)
+
+        # 3. Verify the new blobs before touching the server. Compare
+        #    plaintexts, not ciphertext blobs (fresh nonces differ).
+        for key, b64 in reencrypted.items():
+            original_pt = decrypt_entry(old_key, key, entries[key])
+            if decrypt_entry(new_key, key, b64) != original_pt:
+                raise OpenRecallError(f"rekey verification failed for {key!r}; nothing uploaded")
+
+        # 4. Single delta PUT, then adopt the new key in this client.
+        self.put_entries(reencrypted)
+        self._passphrase = new_passphrase
+        self._keys[SALT_PREFIX] = new_key
+        return {
+            "namespace": self.namespace,
+            "rekeyed": len(reencrypted),
+            "backup": backup_path,
+            "verified": True,
+        }
 
     # -- HTTP ----------------------------------------------------------------
 

@@ -15,13 +15,19 @@ Subcommands:
   hermes openrecall delete <key>  remove an entry
   hermes openrecall search <q>    literal substring search
   hermes openrecall config        show the current config block
+  hermes openrecall backup <file> export ciphertext + metadata (no plaintext)
+  hermes openrecall restore <file> restore ciphertext from an export
+  hermes openrecall verify         decrypt every entry, report integrity
+  hermes openrecall rekey          re-encrypt the namespace under a new passphrase
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import time
 from typing import Any, Dict, List, Optional
 
 from .client import (
@@ -30,6 +36,7 @@ from .client import (
     LEGACY_SALT_PREFIX,
     SALT_PREFIX,
     OpenRecallClient,
+    OpenRecallError,
     read_passphrase,
     rollback_salt,
 )
@@ -160,6 +167,77 @@ def cmd_config(_args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_backup(args: argparse.Namespace) -> int:
+    """Export the namespace as ciphertext. No plaintext, no passphrase."""
+    client, _ = _client_from_args(args)
+    backup = client.export_backup()
+    with open(args.file, "w", encoding="utf-8") as f:
+        json.dump(backup, f, indent=2, sort_keys=True)
+    os.chmod(args.file, 0o600)
+    print(json.dumps({
+        "file": args.file,
+        "namespace": backup["namespace"],
+        "entries": len(backup["entries"]),
+        "contains_plaintext": False,
+    }, indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_restore(args: argparse.Namespace) -> int:
+    """Restore ciphertext from an export. Refuses invalid files pre-upload."""
+    client, _ = _client_from_args(args)
+    try:
+        with open(args.file, "r", encoding="utf-8") as f:
+            backup = json.load(f)
+        result = client.restore_backup(backup, namespace=getattr(args, "dest_namespace", None))
+    except (OSError, ValueError, OpenRecallError) as e:
+        print(f"openrecall: restore refused: {e}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_verify(args: argparse.Namespace) -> int:
+    """Decrypt every entry and report integrity and salt prefixes."""
+    client, _ = _client_from_args(args)
+    result = client.verify_entries()
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result["failed"] == 0 else 1
+
+
+def cmd_rekey(args: argparse.Namespace) -> int:
+    """Re-encrypt every entry under a new passphrase (interactive, confirmed)."""
+    client, cfg = _client_from_args(args)
+    new_pw = os.environ.get("OPENRECALL_NEW_PASSPHRASE", "")
+    if not new_pw:
+        import getpass
+        new_pw = getpass.getpass("new passphrase: ")
+        confirm = getpass.getpass("confirm new passphrase: ")
+        if new_pw != confirm:
+            print("openrecall: passphrases do not match", file=sys.stderr)
+            return 1
+    if not new_pw:
+        print("openrecall: empty passphrase refused", file=sys.stderr)
+        return 1
+    if new_pw == read_passphrase():
+        print("openrecall: new passphrase is unchanged; nothing to do", file=sys.stderr)
+        return 1
+    backup_path = args.backup or os.path.expanduser(
+        "~/.openrecall/rekey-" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + ".json"
+    )
+    os.makedirs(os.path.dirname(backup_path), exist_ok=True)
+    try:
+        result = client.rekey_namespace(new_pw, backup_path)
+    except OpenRecallError as e:
+        print(f"openrecall: rekey aborted: {e}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2, sort_keys=True))
+    print("PASSPHRASE FILE NOT UPDATED. Store the new passphrase securely before "
+          "the old one is lost. The backup file contains ciphertext only.",
+          file=sys.stderr)
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Argparse wiring
 # ---------------------------------------------------------------------------
@@ -184,6 +262,10 @@ _DISPATCH = {
     "search": cmd_search,
     "config": cmd_config,
     "migrate-salt": cmd_migrate_salt,
+    "backup": cmd_backup,
+    "restore": cmd_restore,
+    "verify": cmd_verify,
+    "rekey": cmd_rekey,
 }
 
 
@@ -228,6 +310,17 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
                      help="Rollback file path (default ~/.openrecall/salt-migration-<ts>.json)")
     mig.add_argument("--rollback", default=None, metavar="FILE",
                      help="Restore the original ciphertext from a backup file")
+
+    bak = subs.add_parser("backup", help="Export ciphertext + metadata (no plaintext)")
+    bak.add_argument("file", help="Output path for the JSON backup (chmod 600)")
+    rst = subs.add_parser("restore", help="Restore ciphertext from an export")
+    rst.add_argument("file", help="Backup JSON file to restore from")
+    rst.add_argument("--dest-namespace", default=None, dest="dest_namespace",
+                     help="Restore into a different namespace (default: the export's)")
+    subs.add_parser("verify", help="Decrypt every entry and report integrity")
+    rk = subs.add_parser("rekey", help="Re-encrypt the namespace under a new passphrase")
+    rk.add_argument("--backup", default=None, metavar="FILE",
+                    help="Ciphertext backup path (written before any upload)")
 
     subparser.set_defaults(func=openrecall_command)
 

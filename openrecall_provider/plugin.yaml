@@ -3,12 +3,13 @@ version: 0.3.0
 kind: exclusive
 description: "openrecall — zero-knowledge encrypted memory for Hermes Agent. AES-256-GCM client-side; the server only ever sees ciphertext."
 author: "Reverb <129622142+reverb256@users.noreply.github.com>"
-homepage: "https://github.com/reverb256/hermes-openrecall-provider"
+homepage: "https://github.com/reverb256/openrecall-for-hermes"
 license: "MIT"
 pip_dependencies:
   - cryptography>=41.0.0
-# Tools are exposed by the MemoryProvider ABC via handle_tool_call, not by
-# ctx.register_tool — so provides_tools is intentionally empty.
+# Tools are exposed through the MemoryProvider ABC (get_tool_schemas /
+# handle_tool_call), not ctx.register_tool. Declaring them here makes the
+# validator warn that register() did not register them.
 provides_tools: []
 hooks:
   - on_turn_start
