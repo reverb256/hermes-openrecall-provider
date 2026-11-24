@@ -183,8 +183,8 @@ class OpenRecallMemoryProvider(MemoryProvider):
             return ("openrecall provider requires the 'cryptography' package — "
                     "install it with `pip install cryptography`")
         if not read_passphrase():
-            return ("openrecall passphrase not configured — create "
-                    "~/.openrecall-passphrase.txt (chmod 600) or set OPENRECALL_PASSPHRASE")
+            return ("openrecall passphrase not configured — set "
+                    "OPENRECALL_PASSPHRASE or memory.openrecall.passphrase_file")
         return ""
 
     def initialize(self, session_id: str, **kwargs) -> None:
@@ -560,14 +560,13 @@ class OpenRecallMemoryProvider(MemoryProvider):
         captures them). The passphrase file is the one sensitive artifact
         we need to back up — without it the ciphertext is unrecoverable.
         """
-        paths = []
-        for path in (
-            "/run/secrets/openrecall-passphrase",
-            os.path.expanduser("~/.openrecall-passphrase.txt"),
-        ):
-            if os.path.isfile(path):
-                paths.append(path)
-        return paths
+        from .client import _configured_passphrase_file
+
+        configured = _configured_passphrase_file()
+        if not configured:
+            return []
+        path = os.path.expanduser(configured)
+        return [path] if os.path.isfile(path) else []
 
     # ------------------------------------------------------------------
     # Config schema for ``hermes memory setup`` wizard

@@ -1,22 +1,26 @@
 """Config schema + writer for the ``hermes memory setup`` wizard.
 
-The wizard reads ``get_config_schema()`` from the provider and prompts the
-user for each field, then calls ``save_config()`` to write the non-secret
-values into ``$HERMES_HOME/config.yaml`` under the ``memory.openrecall``
-key. Secrets (the passphrase) are kept in ``~/.openrecall-passphrase.txt``
-or the ``OPENRECALL_PASSPHRASE`` env var, never in config.yaml.
+The wizard reads ``get_config_schema()`` from the provider, prompts for each
+field, writes secret fields (``secret: True`` + ``env_var``) to
+``$HERMES_HOME/.env`` itself, and hands the remaining values to
+``save_config()``, which persists them under ``memory.openrecall`` in
+``$HERMES_HOME/config.yaml``.
 
-Field shape matches the contract documented in
-``hermes-agent/agent/memory_provider.py``:
+The passphrase is not prompted here. It is resolved at runtime by
+``client.read_passphrase()`` through Hermes' profile secret scope
+(``OPENRECALL_PASSPHRASE``). A passphrase *file* is supported only when the
+user names the path in ``passphrase_file``; there is no default location.
 
-  key          — dotted config key
-  label        — human-readable label for the prompt
-  type         — "text" | "integer" | "number" | "boolean"
+Field shape matches the contract in ``hermes-agent/hermes_cli/memory_setup.py``:
+
+  key          — config key under ``memory.openrecall``
+  description  — prompt / help text
   required     — bool
   default      — optional default value
   choices      — optional list of values for enums
-  description  — multi-line help text
-  env_var      — optional name of an env var that can pre-fill the value
+  secret       — True means "prompt masked, write to .env, never config.yaml"
+  env_var      — env var that receives a secret, or pre-fills a plain value
+  when         — optional {field: value} gate
 """
 
 from __future__ import annotations
@@ -26,90 +30,98 @@ from typing import Any, Dict, List
 
 CONFIG_BLOCK_KEY = "memory.openrecall"
 
+#: Fields that are persisted in ``config.yaml`` under ``memory.openrecall``.
+#: ``api_key`` is deliberately absent: it is a secret and goes to ``.env`` via
+#: the wizard's ``secret``/``env_var`` handling.
+CONFIG_FIELDS = ("url", "namespace", "passphrase_file")
+
 
 def build_config_schema(url: str, namespace: str) -> List[Dict[str, Any]]:
     """Return the wizard field list for openrecall.
 
-    Three fields, in prompt order:
-      1. ``url`` — server URL (default: the documented live cluster address)
-      2. ``namespace`` — memory namespace (default: ``user:<USER>``)
-      3. ``api_key`` — optional bearer token, never persisted in config
+    Four fields, in prompt order:
+      1. ``url`` — server URL
+      2. ``namespace`` — memory namespace (default ``user:<USER>``)
+      3. ``api_key`` — optional bearer token, written to ``.env``
+      4. ``passphrase_file`` — optional explicit path to the passphrase file
 
-    The passphrase is NOT prompted here — it is read at runtime from
-    ``~/.openrecall-passphrase.txt`` (chmod 600) or ``OPENRECALL_PASSPHRASE``,
-    so the setup wizard never sees it.
+    The passphrase itself is never prompted and never persisted here.
     """
     user = os.environ.get("USER", "user")
     return [
         {
             "key": "url",
-            "label": "openrecall server URL",
-            "type": "text",
+            "description": "openrecall server URL",
             "required": True,
             "default": url,
-            "description": (
-                "Base URL of the openrecall encrypted-memory server. "
-                "Default points at the documented live cluster address; "
-                "override for self-hosted or staging servers."
-            ),
         },
         {
             "key": "namespace",
-            "label": "memory namespace",
-            "type": "text",
+            "description": (
+                "Memory namespace for this profile. Use a different value to "
+                "isolate profiles on the same server (``user:<USER>`` or "
+                "``agent:<profile>``)."
+            ),
             "required": True,
             "default": namespace or f"user:{user}",
-            "description": (
-                "Tenant namespace for this install. Use a different value "
-                "to isolate profiles or experiments on the same server. "
-                "Convention: ``user:<USER>`` or ``agent:<profile>``."
-            ),
         },
         {
             "key": "api_key",
-            "label": "API key (optional)",
-            "type": "text",
+            "description": "API key (optional; leave blank for self-hosted servers)",
+            "required": False,
+            "secret": True,
+            "env_var": "OPENRECALL_API_KEY",
+        },
+        {
+            "key": "passphrase_file",
+            "description": (
+                "Passphrase file path (optional; blank = disabled). Only this "
+                "explicit path is read — set OPENRECALL_PASSPHRASE to keep the "
+                "passphrase out of a file entirely."
+            ),
             "required": False,
             "default": "",
-            "description": (
-                "Bearer token for hosted openrecall instances. Leave empty "
-                "for self-hosted servers. The key is written to the "
-                "``api_key`` field of the config block, NOT to .env."
-            ),
         },
     ]
 
 
 def write_provider_config(values: Dict[str, Any], hermes_home: str) -> None:
-    """Persist non-secret fields to ``$HERMES_HOME/config.yaml``.
+    """Persist non-secret fields under ``memory.openrecall`` in config.yaml.
 
-    Honors the Hermes convention: live ``config.yaml`` editing is gated
-    by ``hermes config set``; we write through that path so a running
-    agent picks up the new values without a restart.
+    Uses ``hermes_cli.config.set_config_value`` — the supported write path —
+    so live config editing keeps the agent's gate, managed-key guard and
+    atomic save. ``force=True`` suppresses the unknown-key warning: these keys
+    belong to the provider, not to Hermes' own schema.
     """
-    # The provider doesn't get a hermes_home write path; delegate to
-    # ``hermes config set`` for each non-empty value so the agent's
-    # config gate is the only one that touches config.yaml.
-    from hermes_cli.config import cfg_set  # type: ignore
+    try:
+        from hermes_cli.config import set_config_value  # type: ignore
+    except Exception as exc:  # pragma: no cover - depends on host install
+        raise RuntimeError(
+            "cannot write provider config: hermes_cli.config.set_config_value "
+            "is unavailable; run `hermes config set "
+            f"{CONFIG_BLOCK_KEY}.<key> <value>` manually"
+        ) from exc
 
-    for key in ("url", "namespace", "api_key"):
+    for key in CONFIG_FIELDS:
         val = values.get(key)
         if val is None:
             continue
-        if key == "api_key" and not val:
+        text = str(val).strip()
+        if not text:
+            # An empty value is meaningful for passphrase_file (it means
+            # "disabled"); writing "" keeps that intent instead of leaving a
+            # stale path behind.
+            if key == "passphrase_file":
+                set_config_value(f"{CONFIG_BLOCK_KEY}.{key}", "", force=True)
             continue
-        cfg_set(f"{CONFIG_BLOCK_KEY}.{key}", val)
+        set_config_value(f"{CONFIG_BLOCK_KEY}.{key}", text, force=True)
 
 
 def build_hermes_subcommand_table() -> Dict[str, str]:
-    """Return a mapping of CLI flags the setup wizard should expose.
-
-    Hermes PR #82649 makes ``hermes memory setup`` provider-aware. The
-    wizard reads this table to decide which provider-specific options
-    to show on screen.
-    """
+    """Return the provider-specific flags ``hermes memory setup`` exposes."""
     return {
         "--openrecall-url": "openrecall server URL (overrides default)",
         "--openrecall-namespace": "memory namespace (overrides default)",
-        "--openrecall-api-key": "API key for hosted openrecall instances",
+        "--openrecall-api-key": "API key for hosted openrecall instances (-> .env)",
+        "--openrecall-passphrase-file": "explicit passphrase file path (default: none)",
     }

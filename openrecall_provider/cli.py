@@ -347,12 +347,18 @@ def _passphrase_source() -> str:
     """Return a human-readable label for where the passphrase came from."""
     if not read_passphrase():
         return "missing"
-    import os as _os
-    if _os.environ.get("OPENRECALL_PASSPHRASE"):
-        return "env OPENRECALL_PASSPHRASE"
-    if _os.path.isfile("/run/secrets/openrecall-passphrase"):
-        return "/run/secrets/openrecall-passphrase"
-    return "~/.openrecall-passphrase.txt"
+    try:
+        from agent.secret_scope import get_secret  # type: ignore
+
+        if get_secret("OPENRECALL_PASSPHRASE"):
+            return "OPENRECALL_PASSPHRASE (profile-scoped)"
+    except Exception:
+        if os.environ.get("OPENRECALL_PASSPHRASE"):
+            return "env OPENRECALL_PASSPHRASE"
+    from .client import _configured_passphrase_file
+
+    path = _configured_passphrase_file()
+    return f"passphrase_file {path}" if path else "OPENRECALL_PASSPHRASE"
 
 
 def _client_from_args(args: argparse.Namespace) -> tuple[OpenRecallClient, Dict[str, Any]]:
@@ -363,7 +369,7 @@ def _client_from_args(args: argparse.Namespace) -> tuple[OpenRecallClient, Dict[
     api_key = cfg.get("api_key")
     pw = read_passphrase()
     if not pw:
-        print("openrecall: passphrase not found. Set OPENRECALL_PASSPHRASE or "
-              "create ~/.openrecall-passphrase.txt.", file=sys.stderr)
+        print("openrecall: passphrase not found. Set OPENRECALL_PASSPHRASE "
+              "or memory.openrecall.passphrase_file.", file=sys.stderr)
         sys.exit(1)
     return OpenRecallClient(url=url, namespace=ns, passphrase=pw, api_key=api_key), cfg

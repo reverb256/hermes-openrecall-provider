@@ -51,12 +51,60 @@ logger = logging.getLogger(__name__)
 DEFAULT_URL = os.environ.get("OPENRECALL_URL") or "http://127.0.0.1:8080"
 DEFAULT_NAMESPACE = "user:default"
 
+#: Env var holding the passphrase. Read through Hermes' profile secret scope
+#: (``agent.secret_scope.get_secret``) when Hermes is importable, so a
+#: multiplexed process resolves the *active* profile's value rather than the
+#: launch profile's ``os.environ`` copy.
+PASSPHRASE_ENV = "OPENRECALL_PASSPHRASE"
+
+#: Config key naming an explicit passphrase file. Empty/absent = no file is
+#: read at all. Fixed probe locations are deliberately not supported: one file
+#: readable by every profile on the host defeats per-profile isolation.
+PASSPHRASE_FILE_CONFIG_KEY = "passphrase_file"
+
 VERSION = 0x01
 NONCE_LEN = 12
 TAG_LEN = 16
 KEY_LEN = 32
 SCRYPT_N = 1 << 15  # 32768 — strong, ~tens of ms
 SCRYPT_MAXMEM = 64 * 1024 * 1024
+
+
+def _origin(url: str) -> Tuple[str, int]:
+    """Return ``(host, effective_port)`` for redirect comparison."""
+    parts = urllib.parse.urlsplit(url)
+    scheme = (parts.scheme or "").lower()
+    port = parts.port or (443 if scheme == "https" else 80)
+    return ((parts.hostname or "").lower(), port)
+
+
+class _SameOriginRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follow same-origin redirects only.
+
+    ``urllib`` re-sends request headers on redirect — including
+    ``Authorization``. Following a redirect to another host would hand the
+    bearer token to that host, so cross-origin hops are refused outright, as
+    is an https -> http downgrade on the same origin.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401
+        old = urllib.parse.urlsplit(req.full_url)
+        new = urllib.parse.urlsplit(newurl)
+        if (old.hostname or "").lower() != (new.hostname or "").lower():
+            raise OpenRecallError(
+                f"refusing cross-origin redirect {req.full_url} -> {newurl}: "
+                "the Authorization header would be forwarded to another host"
+            )
+        if old.scheme == "https" and new.scheme != "https":
+            raise OpenRecallError(
+                f"refusing https downgrade redirect {req.full_url} -> {newurl}"
+            )
+        if _origin(req.full_url) != _origin(newurl):
+            raise OpenRecallError(
+                f"refusing cross-origin redirect {req.full_url} -> {newurl}: "
+                "port changed on the same host"
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 class OpenRecallError(RuntimeError):
@@ -412,6 +460,14 @@ class OpenRecallClient:
 
     # -- HTTP ----------------------------------------------------------------
 
+    def _opener(self) -> urllib.request.OpenerDirector:
+        """Return the opener used for every request (same-origin redirects only)."""
+        opener = getattr(self, "_http_opener", None)
+        if opener is None:
+            opener = urllib.request.build_opener(_SameOriginRedirectHandler())
+            self._http_opener = opener
+        return opener
+
     def _request(self, method: str, path: str, body: Optional[dict] = None,
                  query: Optional[Dict[str, str]] = None,
                  timeout: Optional[float] = None) -> Tuple[int, Dict[str, Any]]:
@@ -428,7 +484,7 @@ class OpenRecallClient:
         if self.api_key:
             req.add_header("Authorization", f"Bearer {self.api_key}")
         try:
-            with urllib.request.urlopen(req, timeout=timeout or self.timeout) as resp:
+            with self._opener().open(req, timeout=timeout or self.timeout) as resp:
                 raw = resp.read().decode("utf-8", errors="replace")
                 return resp.status, json.loads(raw) if raw else {}
         except urllib.error.HTTPError as e:
@@ -629,31 +685,72 @@ class OpenRecallClient:
 # Module-level helpers (used by __init__.py, cli.py, and config_schema.py)
 # -----------------------------------------------------------------------
 
-def read_passphrase() -> str:
-    """Read the openrecall passphrase from env or the standard file locations.
+def _read_scoped_secret(name: str) -> str:
+    """Read a secret through Hermes' profile scope, failing closed.
 
-    Fallback chain: ``OPENRECALL_PASSPHRASE`` env -> ``/run/secrets/openrecall-passphrase``
-    (secretspec) -> ``~/.openrecall-passphrase.txt`` (0600 hand-placed). Returns
-    an empty string if none of the sources are present.
+    With Hermes importable, ``agent.secret_scope.get_secret`` resolves the
+    active profile's value. When multiplexing is on but no scope is installed
+    it raises; that is a configuration error, and returning "" (passphrase
+    missing) is the safe outcome — reading ``os.environ`` instead would return
+    another profile's secret.
     """
-    # OPENRECALL_* first, then the pre-rename MEMLAWB_* names: deployments and hosts
-    # that predate the rename keep working until they are updated.
-    for name in ("OPENRECALL_PASSPHRASE", "MEMLAWB_PASSPHRASE"):
-        env_pw = os.environ.get(name)
-        if env_pw:
-            return env_pw
-    for path in (
-        "/run/secrets/openrecall-passphrase",
-        "/run/secrets/memlawb-passphrase",
-        os.path.expanduser("~/.openrecall-passphrase.txt"),
-        os.path.expanduser("~/.memlawb-passphrase.txt"),
-    ):
-        try:
-            if os.path.isfile(path):
-                with open(path, "r", encoding="utf-8") as f:
-                    return f.read().strip()
-        except OSError:
-            continue
+    try:
+        from agent.secret_scope import get_secret  # type: ignore
+    except Exception:
+        # Standalone use (tests, `hermes openrecall` outside the agent): no
+        # scope exists, so the process environment is the only source.
+        return os.environ.get(name, "") or ""
+    try:
+        return get_secret(name) or ""
+    except Exception as exc:
+        logger.warning("%s unresolved (no profile secret scope): %s", name, exc)
+        return ""
+
+
+def _configured_passphrase_file() -> str:
+    """Return ``memory.openrecall.passphrase_file``, or "" when unset."""
+    try:
+        from hermes_cli.config import load_config_readonly  # type: ignore
+
+        cfg = load_config_readonly() or {}
+        memory = cfg.get("memory") if isinstance(cfg, dict) else None
+        block = memory.get("openrecall") if isinstance(memory, dict) else None
+        if isinstance(block, dict):
+            path = block.get(PASSPHRASE_FILE_CONFIG_KEY)
+            if path:
+                return str(path)
+    except Exception:
+        return ""
+    return ""
+
+
+def read_passphrase(passphrase_file: Optional[str] = None) -> str:
+    """Resolve the passphrase: profile-scoped env secret, then an explicit file.
+
+    ``OPENRECALL_PASSPHRASE`` is read via ``agent.secret_scope.get_secret``
+    when Hermes is present (see :func:`_read_scoped_secret`).
+
+    The file fallback is opt-in: pass ``passphrase_file`` or set
+    ``memory.openrecall.passphrase_file``. There is no default path — the old
+    ``~/.openrecall-passphrase.txt`` / ``/run/secrets/*`` probing was shared by
+    every profile on the host, and the ``MEMLAWB_*`` alias was an undeclared
+    second credential name. Both are gone; legacy hosts set
+    ``OPENRECALL_PASSPHRASE`` instead.
+    """
+    env_pw = _read_scoped_secret(PASSPHRASE_ENV)
+    if env_pw:
+        return env_pw
+
+    path = _configured_passphrase_file() if passphrase_file is None else str(passphrase_file)
+    if not path:
+        return ""
+    try:
+        path = os.path.expanduser(path)
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read().strip()
+    except OSError:
+        return ""
     return ""
 
 

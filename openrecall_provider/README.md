@@ -2,8 +2,8 @@
 
 Standalone memory backend for [Hermes Agent](https://hermes-agent.nousresearch.com/)
 that talks to a self-hosted [openrecall](https://github.com/Twigpine/openrecall) server
-(the project was `openrecall` before the 2026 rename; this provider keeps the
-the legacy salt and `MEMLAWB_*` env/file fallbacks so existing stores and profiles keep working)
+(the project was `openrecall` before the 2026 rename; this provider still
+decrypts the legacy salt so existing entries keep working)
 with **client-side AES-256-GCM encryption**. The server only ever sees
 ciphertext — your passphrase never leaves this machine.
 
@@ -25,17 +25,22 @@ Hindsight, and the other built-in providers.
 ## One-time setup
 
 ```bash
-# 1. Create the passphrase file (chmod 600 — never check this in)
-umask 077 && python -c "import secrets; open('$HOME/.openrecall-passphrase.txt','w').write(secrets.token_urlsafe(48))"
-chmod 600 $HOME/.openrecall-passphrase.txt
+# 1. Provide the passphrase. Preferred: a profile-scoped secret, so one
+#    Hermes process serving several profiles cannot read another's passphrase.
+hermes config set OPENRECALL_PASSPHRASE "$(python -c 'import secrets;print(secrets.token_urlsafe(48))')"
 
 # 2. Point Hermes at this provider and run the setup wizard
 hermes config set memory.provider openrecall
 hermes memory setup
 ```
 
-The wizard prompts for the server URL and namespace; the passphrase is
-read at runtime from the file and never persisted to config.
+The wizard prompts for the server URL and namespace; the API key goes to
+`.env`, and the passphrase is read at runtime through Hermes' profile secret
+scope (or an explicit file, below) and never persisted to config.
+
+A passphrase file is opt-in only: set `memory.openrecall.passphrase_file` to
+the path you want read. There is no default location — a fixed path is
+readable by every profile on the host.
 
 At runtime the provider reads the `memory.openrecall.{url,namespace}` block from
 the active Hermes config (profile-aware). Precedence: constructor config >
