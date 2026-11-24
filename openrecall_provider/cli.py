@@ -54,8 +54,8 @@ def cmd_status(_args: argparse.Namespace) -> int:
     ns = cfg.get("namespace", DEFAULT_NAMESPACE)
     pw = read_passphrase()
     if not pw:
-        print("openrecall: passphrase not found. Create ~/.openrecall-passphrase.txt "
-              "(chmod 600) or set OPENRECALL_PASSPHRASE.", file=sys.stderr)
+        print("openrecall: passphrase not found. Set OPENRECALL_PASSPHRASE "
+              "or memory.openrecall.passphrase_file.", file=sys.stderr)
         return 1
     client = OpenRecallClient(url=url, namespace=ns, passphrase=pw,
                             api_key=cfg.get("api_key"))
