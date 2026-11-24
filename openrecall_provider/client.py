@@ -204,7 +204,7 @@ def _derive_key(passphrase: str, namespace: str, prefix: str = SALT_PREFIX) -> b
     """Derive the 32-byte namespace key from the passphrase and a salt prefix."""
     if not passphrase:
         raise OpenRecallError("openrecall passphrase is required (set OPENRECALL_PASSPHRASE or "
-                           "create ~/.openrecall-passphrase.txt)")
+                           "set OPENRECALL_PASSPHRASE or memory.openrecall.passphrase_file)")
     salt = hashlib.sha256(f"{prefix}{namespace}".encode("utf-8")).digest()
     return hashlib.scrypt(
         passphrase.encode("utf-8"),
