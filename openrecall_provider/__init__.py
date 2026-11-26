@@ -414,7 +414,8 @@ class OpenRecallMemoryProvider(MemoryProvider):
         return None
 
     def sync_turn(self, user_content: str, assistant_content: str, *,
-                  session_id: str = "", messages: Optional[List[Dict[str, Any]]] = None) -> None:
+                  session_id: str = "", messages: Optional[List[Dict[str, Any]]] = None,
+                  turn_author: Optional[Dict[str, Any]] = None) -> None:
         """Mirror the completed turn into openrecall as a single transcript entry.
 
         We do NOT extract facts here — the model is responsible for calling
