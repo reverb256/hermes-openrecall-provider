@@ -30,8 +30,12 @@ hermes openrecall get <key>           # decrypt and print one entry
 
 ## Common fixes
 
-- **Passphrase missing**: create `~/.openrecall-passphrase.txt` (chmod 600) or
-  export `OPENRECALL_PASSPHRASE`. Re-run `hermes openrecall status`.
+- **Passphrase missing**: the plugin no longer auto-probes `~/.openrecall-passphrase.txt`;
+  a passphrase *file* is opt-in. Either export `OPENRECALL_PASSPHRASE`, or point config at the file
+  with `hermes config set memory.openrecall.passphrase_file ~/.openrecall-passphrase.txt` (file
+  chmod 600). `hermes config set` warns "not a recognized config key" for this provider key — that
+  warning is cosmetic (the owned writer uses `hermes_cli.config.set_config_value(..., force=True)`).
+  Confirm with `hermes openrecall status` and `hermes memory status`.
 - **Server unreachable**: confirm `memory.openrecall.url` in config.yaml points
   at a live openrecall server (`curl <url>/health` should return
   `{"ok":true,...}`). The plugin default is the documented live cluster
