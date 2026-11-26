@@ -31,12 +31,13 @@ import time
 from typing import Any, Dict, List, Optional
 
 from .client import (
-    DEFAULT_NAMESPACE,
     DEFAULT_URL,
     LEGACY_SALT_PREFIX,
     SALT_PREFIX,
     OpenRecallClient,
     OpenRecallError,
+    _default_namespace,
+    read_api_key,
     read_passphrase,
     rollback_salt,
 )
@@ -51,14 +52,15 @@ PROVIDER_NAME = "openrecall"
 def cmd_status(_args: argparse.Namespace) -> int:
     cfg = _load_config_block()
     url = cfg.get("url", DEFAULT_URL)
-    ns = cfg.get("namespace", DEFAULT_NAMESPACE)
+    ns = cfg.get("namespace") or _default_namespace()
+    api_key = read_api_key()  # wizard writes OPENRECALL_API_KEY to .env, never config.yaml
     pw = read_passphrase()
     if not pw:
         print("openrecall: passphrase not found. Set OPENRECALL_PASSPHRASE "
               "or memory.openrecall.passphrase_file.", file=sys.stderr)
         return 1
     client = OpenRecallClient(url=url, namespace=ns, passphrase=pw,
-                            api_key=cfg.get("api_key"))
+                            api_key=api_key)
     print(f"  url        : {client.url}")
     print(f"  namespace  : {client.namespace}")
     print(f"  api_key    : {'set' if client.api_key else '(none)'}")
@@ -161,7 +163,7 @@ def cmd_config(_args: argparse.Namespace) -> int:
     cfg = _load_config_block()
     if not cfg:
         print("openrecall: no config block under memory.openrecall in config.yaml.")
-        print(f"  defaults would be: url={DEFAULT_URL} namespace={DEFAULT_NAMESPACE}")
+        print(f"  defaults would be: url={DEFAULT_URL} namespace={_default_namespace()}")
         return 0
     print(json.dumps(cfg, indent=2))
     return 0
@@ -364,9 +366,9 @@ def _passphrase_source() -> str:
 def _client_from_args(args: argparse.Namespace) -> tuple[OpenRecallClient, Dict[str, Any]]:
     """Build a client from the active config block + optional --namespace override."""
     cfg = _load_config_block()
-    ns = getattr(args, "namespace", None) or cfg.get("namespace", DEFAULT_NAMESPACE)
+    ns = getattr(args, "namespace", None) or cfg.get("namespace") or _default_namespace()
     url = cfg.get("url", DEFAULT_URL)
-    api_key = cfg.get("api_key")
+    api_key = read_api_key()  # scoped OPENRECALL_API_KEY; never from config.yaml
     pw = read_passphrase()
     if not pw:
         print("openrecall: passphrase not found. Set OPENRECALL_PASSPHRASE "

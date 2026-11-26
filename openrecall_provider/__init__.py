@@ -63,7 +63,9 @@ from .client import (
     DEFAULT_URL,
     OpenRecallClient,
     OpenRecallError,
+    _default_namespace,
     is_crypto_available,
+    read_api_key,
     read_passphrase,
 )
 
@@ -104,20 +106,21 @@ def _config_file_block() -> Dict[str, Any]:
 
 
 def _resolve_namespace(config: Dict[str, Any], file_cfg: Dict[str, Any]) -> str:
-    """Namespace precedence: ctor config > ``OPENRECALL_NAMESPACE`` > config.yaml > default.
+    """Namespace precedence: ctor config > ``OPENRECALL_NAMESPACE`` > config.yaml > profile default.
 
     Env outranks the config file so the documented escape hatch
     (``OPENRECALL_NAMESPACE=... hermes openrecall get <key>``) keeps working.
+    The last-resort default is profile-specific (``agent:<profile>``) so two
+    profiles on one server cannot list/delete each other's entries by default.
     """
     for candidate in (
         config.get("namespace"),
         os.environ.get("OPENRECALL_NAMESPACE"),
         file_cfg.get("namespace"),
-        DEFAULT_NAMESPACE,
     ):
         if candidate:
             return str(candidate)
-    return DEFAULT_NAMESPACE
+    return _default_namespace()
 
 
 class OpenRecallMemoryProvider(MemoryProvider):
@@ -136,8 +139,12 @@ class OpenRecallMemoryProvider(MemoryProvider):
             self._config.get("url") or file_cfg.get("url") or DEFAULT_URL
         ).rstrip("/")
         self._namespace: str = _resolve_namespace(self._config, file_cfg)
+        # API key: ctor config (explicit override) first, then the profile-scoped
+        # OPENRECALL_API_KEY that the setup wizard writes to .env. Never read it
+        # from config.yaml — that path was moved away from and a stale key there
+        # must not silently win. See tek's 2026-11-26 review.
         self._api_key: Optional[str] = (
-            self._config.get("api_key") or file_cfg.get("api_key") or None
+            self._config.get("api_key") or read_api_key() or None
         )
         self._session_id: str = ""
         # Client constructed lazily — gives the linter a chance to see
@@ -592,7 +599,7 @@ class OpenRecallMemoryProvider(MemoryProvider):
 
 
 def _namespace_default() -> str:
-    return os.environ.get("OPENRECALL_NAMESPACE", DEFAULT_NAMESPACE)
+    return os.environ.get("OPENRECALL_NAMESPACE") or _default_namespace()
 
 
 # ---------------------------------------------------------------------------

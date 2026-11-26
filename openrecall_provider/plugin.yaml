@@ -1,5 +1,5 @@
 name: openrecall
-version: 0.4.1
+version: 0.4.2
 kind: exclusive
 description: "openrecall — zero-knowledge encrypted memory for Hermes Agent. AES-256-GCM client-side; the server only ever sees ciphertext."
 author: "Reverb <129622142+reverb256@users.noreply.github.com>"
@@ -18,6 +18,11 @@ hooks:
   - on_session_end
 requires_env:
   - OPENRECALL_PASSPHRASE
+optional_env:
+  # Optional bearer token for hosted openrecall servers. The setup wizard
+  # writes this to $HERMES_HOME/.env; the provider reads it through the profile
+  # secret scope. Never read a key from config.yaml.
+  - OPENRECALL_API_KEY
 config:
   url: http://127.0.0.1:8080
   namespace: user:default

@@ -25,8 +25,9 @@ Field shape matches the contract in ``hermes-agent/hermes_cli/memory_setup.py``:
 
 from __future__ import annotations
 
-import os
 from typing import Any, Dict, List
+
+from .client import _default_namespace
 
 CONFIG_BLOCK_KEY = "memory.openrecall"
 
@@ -41,13 +42,13 @@ def build_config_schema(url: str, namespace: str) -> List[Dict[str, Any]]:
 
     Four fields, in prompt order:
       1. ``url`` — server URL
-      2. ``namespace`` — memory namespace (default ``user:<USER>``)
+      2. ``namespace`` — memory namespace (default ``agent:<profile>`` so two
+         profiles on one server stay isolated; a user can set a shared value)
       3. ``api_key`` — optional bearer token, written to ``.env``
       4. ``passphrase_file`` — optional explicit path to the passphrase file
 
     The passphrase itself is never prompted and never persisted here.
     """
-    user = os.environ.get("USER", "user")
     return [
         {
             "key": "url",
@@ -58,12 +59,12 @@ def build_config_schema(url: str, namespace: str) -> List[Dict[str, Any]]:
         {
             "key": "namespace",
             "description": (
-                "Memory namespace for this profile. Use a different value to "
-                "isolate profiles on the same server (``user:<USER>`` or "
-                "``agent:<profile>``)."
+                "Memory namespace for this profile. Defaults to "
+                "``agent:<profile>`` (one namespace per Hermes profile). Set "
+                "the same value on two profiles only if you intend to share."
             ),
             "required": True,
-            "default": namespace or f"user:{user}",
+            "default": namespace or _default_namespace(),
         },
         {
             "key": "api_key",

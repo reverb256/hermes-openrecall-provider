@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-openrecall-provider"
-version = "0.4.1"
+version = "0.4.2"
 description = "Zero-knowledge encrypted memory provider for Hermes Agent — AES-256-GCM client-side, server only ever sees ciphertext."
 readme = "openrecall_provider/README.md"
 requires-python = ">=3.9"

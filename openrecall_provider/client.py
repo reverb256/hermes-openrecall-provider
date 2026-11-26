@@ -34,6 +34,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
@@ -49,7 +50,43 @@ logger = logging.getLogger(__name__)
 # ``OPENRECALL_URL`` / ``memory.openrecall.url``, and localhost is only the fallback for
 # a client running on the same machine as the server.
 DEFAULT_URL = os.environ.get("OPENRECALL_URL") or "http://127.0.0.1:8080"
-DEFAULT_NAMESPACE = "user:default"
+
+# Namespaces and entry names travel to the server in the clear. A fixed
+# ``user:default`` let two Hermes profiles on one server list and delete each
+# other's entries. The default is therefore profile-specific; a user who sets
+# a namespace explicitly can still share one on purpose. See
+# ``_default_namespace()`` and tek's 2026-11-26 review on hermes-agent#159248.
+DEFAULT_NAMESPACE = "user:default"  # fallback only when Hermes isn't importable
+
+
+def _active_profile_name() -> str:
+    """Best-effort active profile name, mirroring Hermes' own helper.
+
+    A named profile's HERMES_HOME is ``~/.hermes/profiles/<name>``; the default
+    root (``~/.hermes`` or an unset override) returns "" so the fallback keeps
+    working. Uses ``get_hermes_home()`` when Hermes is importable, else env.
+    """
+    try:
+        from hermes_constants import get_hermes_home  # type: ignore
+
+        home = get_hermes_home()
+        if home is not None:
+            resolved = Path(str(home))
+            if resolved.parent.name == "profiles" and resolved.name:
+                return resolved.name
+    except Exception:
+        pass
+    for env_name in ("HERMES_PROFILE_NAME", "HERMES_PROFILE"):
+        value = os.environ.get(env_name, "").strip()
+        if value and value != "default":
+            return value
+    return ""
+
+
+def _default_namespace() -> str:
+    """Profile-specific default namespace: ``agent:<profile>`` per profile."""
+    profile = _active_profile_name()
+    return f"agent:{profile}" if profile else DEFAULT_NAMESPACE
 
 #: Env var holding the passphrase. Read through Hermes' profile secret scope
 #: (``agent.secret_scope.get_secret``) when Hermes is importable, so a
@@ -705,6 +742,23 @@ def _read_scoped_secret(name: str) -> str:
     except Exception as exc:
         logger.warning("%s unresolved (no profile secret scope): %s", name, exc)
         return ""
+
+
+#: Env var holding the optional bearer token for a hosted openrecall server.
+#: The wizard writes it to ``$HERMES_HOME/.env``; read it through the same
+#: profile scope as the passphrase, never from ``config.yaml``.
+API_KEY_ENV = "OPENRECALL_API_KEY"
+
+
+def read_api_key() -> str:
+    """Resolve the API key from the profile-scoped ``OPENRECALL_API_KEY``.
+
+    A key left in ``config.yaml`` is deliberately ignored: tek's 2026-11-26
+    review found the wizard writes the secret to ``.env`` while the provider
+    only read the config block, so an authenticated server rejected every
+    call after setup. Reading through the scope keeps profiles isolated.
+    """
+    return _read_scoped_secret(API_KEY_ENV)
 
 
 def _configured_passphrase_file() -> str:

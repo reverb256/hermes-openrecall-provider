@@ -194,8 +194,8 @@ def test_versions_and_dependency_bound():
     plugin = open(
         os.path.join(root, "openrecall_provider", "plugin.yaml"), encoding="utf-8"
     ).read()
-    assert 'version = "0.4.1"' in pyproject
-    assert "version: 0.4.1" in plugin
+    assert 'version = "0.4.2"' in pyproject
+    assert "version: 0.4.2" in plugin
     assert '"cryptography>=41,<47"' in pyproject
     assert "cryptography>=41,<47" in plugin
 
